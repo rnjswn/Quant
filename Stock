@@ -136,3 +136,4 @@ class Stock():
             (self.hist["High"].rolling(window=5).max() < self.hist["High"].shift(1)) &  
             (self.hist["Low"].rolling(window=5).min() > self.hist["Low"].shift(1))  
         ).astype(int)
+        
