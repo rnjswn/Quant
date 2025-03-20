@@ -1,0 +1,53 @@
+class PatternModel:
+    def __init__(self, tickers, data):
+        data = data.stack(level=1).reset_index()
+        data.rename(columns={'level_1': 'Ticker'}, inplace=True)  # 'ticker' → 'Ticker' 유지
+
+        self.tickers = [t for t in tickers if t in data["Ticker"].unique()]
+        self.data = data
+        self.candle_patterns = talib.get_function_groups()["Pattern Recognition"]
+        self.load_data()
+
+    def load_data(self):
+        stock_data = []
+        for ticker in self.tickers:
+            stock_hist = self.data[self.data["Ticker"] == ticker].copy()  
+            if stock_hist.empty:
+                print(f"⚠️ 경고: {ticker} 종목 데이터가 없습니다. 건너뜀.")
+                continue  # ❗ Stock 클래스 호출을 막음
+
+            stock = Stock(ticker, stock_hist)
+            stock.detect_patterns()
+            stock_data.append(stock.hist)
+
+        if stock_data:
+            self.data = pd.concat(stock_data)
+        else:
+            self.data = pd.DataFrame()
+
+    def train_model(self):
+        features= ["body_size","candle_range","body_range","upper_range","lower_range",
+           "SMA_5","SMA_10","volatility"] + self.candle_patterns
+        
+        target_patterns=[
+           "double_top", "double_bottom", "head_shoulders", "inverse_head_shoulders",
+           "ascending_triangle", "descending_triangle", "symmetrical_triangle"]
+       
+        self.data = self.data.dropna()
+        
+        x = self.data[features]
+        y = self.data[target_patterns]
+
+        X_train, X_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
+        
+        # 모델 생성 & 학습
+        model = XGBClassifier(n_estimators=100, learning_rate=0.1, max_depth=6, random_state=42)
+        model.fit(X_train, y_train)
+
+        # 예측 및 평가
+        y_pred = model.predict(X_test)
+        print(classification_report(y_test, y_pred))
+
+        self.model = model  # 모델 저장
+        return model
+    
