@@ -1,0 +1,138 @@
+class Stock():
+    def __init__(self, name, data):
+        self.name = name
+        if "Ticker" in data.columns:
+            stock_data = data[data["Ticker"] == name].copy()
+            if stock_data.empty:
+                raise KeyError(f"데이터에 {name} 종목이 없습니다. 현재 Ticker 값: {data['Ticker'].unique().tolist()}")
+            self.hist = stock_data
+        else:
+            if isinstance(data.columns, pd.MultiIndex):
+                try:
+                    self.hist = data.xs(name, level=1, axis=1).copy()
+                except KeyError:
+                    raise KeyError(f"MultiIndex 데이터에서 {name} 종목을 찾을 수 없습니다. 사용 가능한 종목: {data.columns.get_level_values(1).unique().tolist()}")
+            else:
+                if name in data.columns:
+                    self.hist = data[[name]].copy()
+                else:
+                    raise KeyError(f"데이터에 {name} 종목이 없습니다. 현재 컬럼: {list(data.columns)}")
+
+        if self.hist.empty:
+            self.hist = data.xs(name, level=1, axis=1).fillna(method="ffill")
+
+        self.candle_patterns = talib.get_function_groups()["Pattern Recognition"]
+        self.features()
+        self.detect_patterns()
+        
+    def candle_stick(self):
+        fig = go.Figure(data =[go.Candlestick(x=self.hist.index,
+                                    open=self.hist['Open'],
+                                    high=self.hist['High'],
+                                    low=self.hist['Low'],
+                                    close= self.hist['Close'])])
+        fig.layout = dict(title= self.name,
+                           xaxis = dict(type = "category",
+                                        categoryorder = 'category ascending'))
+        fig.update_xaxes(nticks=5)
+        fig.show()
+        
+    def features(self):
+        if self.hist.empty:
+            return
+        
+        self.hist["body_size"]  =abs(self.hist["Close"] - self.hist["Open"]) #캔들의 몸통 
+        self.hist["lower_shadow"] = self.hist["Open"] - self.hist["Low"] #캔들의 윗꼬리
+        self.hist["upper_shadow"] = self.hist["High"] - self.hist["Close"] #캔들의 아랫꼬리
+        self.hist["candle_range"] = self.hist["High"] - self.hist["Low"] #캔들의 전체 범위
+        self.hist["body_range"] = self.hist["body_size"] / self.hist["candle_range"] #몸통 크기가 전체 캔들 길이에서 차지하는 비율
+        self.hist["upper_range"] = self.hist["upper_shadow"] / self.hist["candle_range"] #윗꼬리가 전체 캔들 길이에서 차지하는 비율
+        self.hist["lower_range"] = self.hist["lower_shadow"] / self.hist["candle_range"] #아랫꼬리가 전체 캔들 길이에서 차지하는 비율
+
+        self.hist[["body_range", "upper_range", "lower_range"]] = self.hist[["body_range", "upper_range", "lower_range"]].fillna(0)
+
+        candle_patterns = talib.get_function_groups()["Pattern Recognition"]
+
+        for pattern in candle_patterns:
+            self.hist[pattern] = getattr(talib,pattern)(
+            self.hist["Open"],self.hist["High"], self.hist["Low"],self.hist["Close"]
+            )
+
+        self.hist["SMA_5"] = self.hist["Close"].rolling(window=5).mean().fillna(0)
+        self.hist["SMA_10"] = self.hist["Close"].rolling(window=10).mean().fillna(0)
+        self.hist["volatility"] = self.hist["Close"].rolling(window=5).std().fillna(0)
+
+        self.hist["pattern_label"] = self.hist[self.candle_patterns].idxmax(axis=1)
+        self.hist["pattern_label"] = self.hist["pattern_label"].where(self.hist[self.candle_patterns].sum(axis=1) != 0, "No Pattern")
+
+        self.hist["ticker"] = self.name
+
+
+    def detect_patterns(self):
+        #주식 차트 패턴 코드화
+        self.detect_double_top()
+        self.detect_double_bottom()
+        self.detect_head_shoulders()
+        self.detect_inverse_head_shoulders()
+        self.detect_ascending_triangle()
+        self.detect_descending_triangle()
+        self.detect_symmetrical_triangle()
+
+
+    #더블탑 패턴
+    def detect_double_top(self): 
+        self.hist["rolling_max"] = self.hist["High"].rolling(window=10).max()
+        self.hist["double_top"] = (
+            (self.hist["High"] > self.hist["rolling_max"].shift(1)) &  
+            (self.hist["High"].shift(1) > self.hist["rolling_max"].shift(2)) &  
+            (self.hist["Close"] < self.hist["High"].shift(1))  
+        ).astype(int)
+
+    #더블바텀 패턴
+    def detect_double_bottom(self):
+        self.hist["rolling_min"] = self.hist["Low"].rolling(window=10).min()
+        self.hist["double_bottom"] = (
+            (self.hist["Low"] < self.hist["rolling_min"].shift(1)) &  
+            (self.hist["Low"].shift(1) < self.hist["rolling_min"].shift(2)) &  
+            (self.hist["Close"] > self.hist["Low"].shift(1))  
+        ).astype(int)
+
+    #헤드앤숄더 패턴
+    def detect_head_shoulders(self):
+        self.hist["head_shoulders"] = (
+            (self.hist["High"].shift(1) < self.hist["High"].shift(2)) &  
+            (self.hist["High"] > self.hist["High"].shift(1)) &  
+            (self.hist["High"].shift(-1) < self.hist["High"]) &  
+            (self.hist["Close"] < self.hist["Low"].rolling(window=5).mean())  
+        ).astype(int)
+
+
+    #역헤드앤숄더패턴
+    def detect_inverse_head_shoulders(self):
+        self.hist["inverse_head_shoulders"] = (
+            (self.hist["Low"].shift(1) > self.hist["Low"].shift(2)) &  
+            (self.hist["Low"] < self.hist["Low"].shift(1)) &  
+            (self.hist["Low"].shift(-1) > self.hist["Low"]) &  
+            (self.hist["Close"] > self.hist["High"].rolling(window=5).mean())  
+        ).astype(int)
+
+    #상승 삼각형 패턴
+    def detect_ascending_triangle(self):
+        self.hist["ascending_triangle"] = (
+            (self.hist["High"].rolling(window=5).max() == self.hist["High"]) &  
+            (self.hist["Low"].rolling(window=5).min() > self.hist["Low"].shift(1))  
+        ).astype(int)
+
+    #하락 삼각형 패턴 
+    def detect_descending_triangle(self):
+        self.hist["descending_triangle"] = (
+            (self.hist["Low"].rolling(window=5).min() == self.hist["Low"]) &  
+            (self.hist["High"].rolling(window=5).max() < self.hist["High"].shift(1))  
+        ).astype(int)
+
+    #대칭 삼각형패턴 
+    def detect_symmetrical_triangle(self):
+        self.hist["symmetrical_triangle"] = (
+            (self.hist["High"].rolling(window=5).max() < self.hist["High"].shift(1)) &  
+            (self.hist["Low"].rolling(window=5).min() > self.hist["Low"].shift(1))  
+        ).astype(int)
